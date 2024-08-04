@@ -9,7 +9,12 @@
 // Map input CRSF channels (1-based, up to 16 for CRSF, 12 for ELRS) to outputs 1-8
 // use a negative number to invert the signal (i.e. +100% becomes -100%)
 constexpr int OUTPUT_MAP[NUM_OUTPUTS] = { 1, 2, 3, 4, 6, 7, 8, 12 };
-// The failsafe action for each channel (fsaNoPulses, fsaHold, or microseconds)
+/**   
+ * The failsafe action for each channel (fsaNoPulses, fsaHold, or microseconds) 
+ * 标记为 fsaHold 表示该通道在失控后保持失控前的值
+ * 标记为 fsaNoPulses 表示该通道失控后不输出pwm
+ * 其它值表示失控后默认输出的pwm脉宽
+**/
 constexpr int OUTPUT_FAILSAFE[NUM_OUTPUTS] = {
     1500, 1500, 988, 1500,                  // ch1-ch4
     fsaHold, fsaHold, fsaHold, fsaNoPulses  // ch5-ch8
@@ -52,6 +57,14 @@ static struct tagConnectionState {
     bool serialEcho;
 } g_State;
 
+/**
+ * @brief: OOBData 通常指的是“Out-of-Band Data”，即带外数据。
+ * 带外数据指的是不通过正常的CRSF通信通道传输的数据，而是通过另一条独立的通道来传输。
+ * 例如，串口透传模式下的数据，也就是设备从串口收到了什么就再从另一个串口原封不动得发出去。
+ * 飞控串口透传给接收机刷固件估计也是这么搞的。这里我们留着，必要的时候拿来做debug用
+ * @param {uint8_t} b
+ * @return {*}
+ */
 static void crsfOobData(uint8_t b)
 {
     // A shifty byte is usually just log messages from ELRS
@@ -110,25 +123,39 @@ static void servoPlatformEnd(unsigned int servo)
 #endif
 }
 
+/**
+ * @brief: 输出PWM值到舵机。
+ * @param {unsigned int} servo
+ * @param {int} usec 微秒，pwm 高电平时间 范围 ：1000us ~ 2000us
+ * @return {*}
+ */
 static void servoSetUs(unsigned int servo, int usec)
 {
     if (usec > 0)
     {
         // 0 means it was disabled previously, enable OUTPUT mode
+        // 如果g_OutputsUs[servo]里面记录的数值是0，就说明上一次该引脚被 de-init(disabled)了。
+        // 那么这次输出PWM之前就要重新 init 一下该引脚
         if (g_OutputsUs[servo] == 0)
             servoPlatformBegin(servo);
         servoPlatformSet(servo, usec);
     }
     else
     {
+        // 如果 usec <= 0 就说明这个引脚用不到了，就 disabled 这个引脚。
         servoPlatformEnd(servo);
     }
-    g_OutputsUs[servo] = usec;
+    g_OutputsUs[servo] = usec;  // 记录上一次 servo_x 的pwm值到(g_OutputsUs[servo])
 }
 
 
+/**
+ * @brief: 失控保护，按照 OUTPUT_FAILSAFE[] 数组内存储的模式 配置失控之后各个PWM引脚的输出
+ * @return {*}
+ */
 static void outputFailsafeValues()
  {
+    // 遍历8个要输出PWM的通道
     for (unsigned int out=0; out<NUM_OUTPUTS; ++out)
     {
         if (OUTPUT_FAILSAFE[out] == fsaNoPulses)
@@ -166,24 +193,29 @@ static bool isArmed()
 }
 #endif
 
+/**
+ * @brief: 这个函数指针被赋值给 crsf.onPacketChannels 。用于处理收到的RC通道，这里是转换为PWM信号输出到引脚
+ * @return {*}
+ */
 static void packetChannels()
 {
-#if defined(USE_ARMSWITCH)
-    if (!isArmed())
-    {
-        outputFailsafeValues();
-        return;
-    }
-#endif
+    #if defined(USE_ARMSWITCH)
+        if (!isArmed())
+        {
+            outputFailsafeValues();
+            return;
+        }
+    #endif
 
     for (unsigned int out=0; out<NUM_OUTPUTS; ++out)
     {
-        const int chInput = OUTPUT_MAP[out];
+        const int chInput = OUTPUT_MAP[out];    // 遍历 输出PWM的引脚和通道映射表 OUTPUT_MAP[out]
         int usOutput;
         if (chInput > 0)
             usOutput = crsf.getChannel(chInput);
         else
         {
+            // 通道值反相。如果我们在引脚和通道映射表 OUTPUT_MAP[] 里面填入 `-2`。意思是 GPIO 2 输出关于1500对称的通道值，也就是3000-usOutput
             // if chInput is negative, invert the channel output
             usOutput = crsf.getChannel(-chInput);
             // (1500 - usOutput) + 1500
@@ -213,18 +245,26 @@ static void crsfLinkUp()
     digitalWrite(DPIN_LED, HIGH ^ LED_INVERTED);
 }
 
+/**
+ * @brief: 数据链路异常（失控），触发失控保护
+ * @return {*}
+ */
 static void crsfLinkDown()
 {
     digitalWrite(DPIN_LED, LOW ^ LED_INVERTED);
     outputFailsafeValues();
  }
 
+/**
+ * @brief: 检查供电电压
+ * @return {*}
+ */
 static void checkVbatt()
 {
 #if defined(APIN_VBAT)
     if (millis() - g_State.lastVbatRead < (VBAT_INTERVAL / VBAT_SMOOTH))
-        return;
-    g_State.lastVbatRead = millis();
+        return; // 不到检测电压的时候，直接退出
+    g_State.lastVbatRead = millis();    // 上一次检查供电电压的时刻
 
     unsigned int idx = g_State.vbatSmooth.add(analogRead(APIN_VBAT));
     if (idx != 0)
@@ -305,6 +345,10 @@ static bool handleSerialCommand(char *cmd)
     return false;
 }
 
+/**
+ * @brief: 串口透传模式下，处理串口输入的数据。从串口in接收，直接从串口crsf发出去
+ * @return {*}
+ */
 static void checkSerialInPassthrough()
 {
     static uint32_t lastData = 0;
@@ -323,6 +367,7 @@ static void checkSerialInPassthrough()
         gotData = true;
     }
 
+    //如果太长时间都没收到串口in的数据了，就先关闭串口透传模式，等待下一次 串口in 的指令重新开启串口透传吧
     // If longer than X seconds since last data, switch out of passthrough
     if (gotData || !lastData)
         lastData = millis();
@@ -347,28 +392,28 @@ static void checkSerialInNormal()
 {
     while (Serial.available())
     {
-        char c = Serial.read();
+        char c = Serial.read();     //  串口读字节
         if (g_State.serialEcho && c != '\n')
-            Serial.write(c);
+            Serial.write(c);    // 发回读到的字符
 
-        if (c == '\r' || c == '\n')
+        if (c == '\r' || c == '\n')     //收到了一次发送的结束符
         {
             if (g_State.serialInBuffLen != 0)
             {
-                Serial.write('\n');
+                Serial.write('\n'); // 发回去一个换行符，让串口助手换行
 
-                g_State.serialInBuff[g_State.serialInBuffLen] = '\0';
+                g_State.serialInBuff[g_State.serialInBuffLen] = '\0'; // 最后面要拼一个\0 因为c语言中字符串最后是\0字符
                 g_State.serialInBuffLen = 0;
 
-                bool goToPassthrough = handleSerialCommand(g_State.serialInBuff);
+                bool goToPassthrough = handleSerialCommand(g_State.serialInBuff);   // 看一下指令是不是开启了串口透传模式(Passthrough mode)
                 // If need to go to passthrough, get outta here before we dequeue any bytes
-                if (goToPassthrough)
+                if (goToPassthrough)    //如果串口发来的指令让 我们的设备进入了串口透传模式，直接返回
                     return;
             }
         }
         else
         {
-            g_State.serialInBuff[g_State.serialInBuffLen++] = c;
+            g_State.serialInBuff[g_State.serialInBuffLen++] = c;    // 收到的字符存到buffer里面
             // if the buffer fills without getting a newline, just reset
             if (g_State.serialInBuffLen >= sizeof(g_State.serialInBuff))
                 g_State.serialInBuffLen = 0;
@@ -376,30 +421,40 @@ static void checkSerialInNormal()
     }  /* while Serial */
 }
 
+/**
+ * @brief: 检查是否有串口输入，注意这个串口不是CRSF的那个串口，是另一个用户串口。用于用户的指令输入或者串口透传
+ * @return {*}
+ */
 static void checkSerialIn()
 {
-    if (crsf.getPassthroughMode())
+    if (crsf.getPassthroughMode())      // 如果开启了串口透传模式
         checkSerialInPassthrough();
     else
-        checkSerialInNormal();
+        checkSerialInNormal();          // 检查串口输入
 }
 
+/**
+ * @brief: 1、Crsf通信初始化，包括向类中的函数指针传入对应的函数（用户可以灵活得自定义这些行为）2、开启通信
+ * @return {*}
+ */
 static void setupCrsf()
 {
-    crsf.onLinkUp = &crsfLinkUp;
-    crsf.onLinkDown = &crsfLinkDown;
-    crsf.onOobData = &crsfOobData;
-    crsf.onPacketChannels = &packetChannels;
+    crsf.onLinkUp = &crsfLinkUp;        // 向crsf类传入通讯链路正常时的行为
+    crsf.onLinkDown = &crsfLinkDown;    // 通讯链路异常时的行为
+    crsf.onOobData = &crsfOobData;      // 如何处理带外数据的行为
+    crsf.onPacketChannels = &packetChannels;    // 处理收到的通道数据的行为。
     crsf.onPacketLinkStatistics = &packetLinkStatistics;
-    crsf.begin();
+    crsf.begin();       // 开启串口，通信正式开始
 }
 
 static void setupGpio()
 {
-    pinMode(DPIN_LED, OUTPUT);
-    digitalWrite(DPIN_LED, LOW ^ LED_INVERTED);
+    pinMode(DPIN_LED, OUTPUT);  //LED 
+    digitalWrite(DPIN_LED, LOW ^ LED_INVERTED); // 上电时LED先拉低，数据通讯链路正常建立时 再调用crsfLinkUp()拉高LED
     analogReadResolution(12);
-
+    
+    // 在这里我们并没有初始化 所有的OUTPUT_MAP[NUM_OUTPUTS]中记录的与servo outputs相关的引脚，
+    // 而是在后续过程中，当接收到了第一个有效数据包时，再将用到的引脚进行对应的初始化。
     // The servo outputs are initialized when the
     // first channels packet comes in and sets the PWM
     // output value, to prevent them from jerking around
@@ -418,5 +473,13 @@ void loop()
 {
     crsf.loop();
     checkVbatt();
-    checkSerialIn();
+    checkSerialIn();    // 检查是否有串口输入，注意是另一个的串口，不是连接接收机CRSF的那个串口
 }
+
+/**
+ * 串口透传模式 PassthroughMode
+ * 假设我们现在有两个串口，serial_A serial_B B连接CRSF设备例如接收机，A连接到了电脑
+ * 串口透传就是 单片机从A接收到的数据原封不动地再从B串口发出去，从B串口接收到的数据再从A串口发出去
+ * 作者在这里其实是想通过串口透传，把stm32f103的crsf-pwm转接板当成一个USB转ttl模块，直接插把转接板插usb到电脑上就可以给elrs接收机刷固件了
+ */
+

@@ -26,6 +26,7 @@ public:
     const crsfLinkStatistics_t *getLinkStatistics() const { return &_linkStatistics; }
     const crsf_sensor_gps_t *getGpsSensor() const { return &_gpsSensor; }
     bool isLinkUp() const { return _linkIsUp; }
+    // 获取 串口透传波特率是否被赋值。一旦_passthroughBaud被赋值为波特率（非0值），返回串口透传模式开启。
     bool getPassthroughMode() const { return _passthroughBaud != 0; }
     void setPassthroughMode(bool val, uint32_t passthroughBaud = 0);
 
@@ -49,9 +50,9 @@ private:
     uint32_t _baud;
     uint32_t _lastReceive;
     uint32_t _lastChannelsPacket;
-    bool _linkIsUp;
-    uint32_t _passthroughBaud;
-    int _channels[CRSF_NUM_CHANNELS];
+    bool _linkIsUp; // 记录通讯链路是否正常的标志位。
+    uint32_t _passthroughBaud;  // 串口透传波特率，如果未赋值，表示关闭串口透传。一旦被赋值位波特率表示串口透传模式开启。
+    int _channels[CRSF_NUM_CHANNELS];   // 通道值，注意已经被映射到了 1000 ~ 2000us 的范围内
 
     void handleSerialIn();
     void handleByteReceived();

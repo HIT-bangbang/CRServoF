@@ -1,3 +1,11 @@
+# CRSF 协议使用-详细注释
+
+通过该项目 https://github.com/CapnBry/CRServoF 学习CRSF协议 
+
+为原本作者的代码增加了详细注释和字节的理解
+
+以下是原本作者的README.md
+
 ## CRServoF - The CSRF serial protocol to PWM servo converter
 
 I wanted to create a small project to mess around with PWM servo output for ExpressLRS, and thought this might be of use for other people.
@@ -31,7 +39,6 @@ The code sends a BATTERY telemetry item back to the CRSF RX, using A0 as the inp
 ### ExpressLRS_via_BetaflightPassthrough
 
 The serial UART will attempt to emulate a Betaflight CLI so ExpressLRS can flash the connected RX with yet another RC version. This works, I dunno, like 80% of the time? It is hard to get all the timing just right, but if it fails, you will likely need to repower the whole device because the RX is in the bootloader and probably at the wrong autobaud.
-
 
 
 
