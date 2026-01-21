@@ -242,6 +242,15 @@ static inline uint16_t be16toh(uint16_t val)
 #endif
 }
 
+static inline uint32_t be24toh(uint32_t val)
+{
+#if (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+    return val;
+#else
+    return (val >> 16) | (val & 0x00ff00) | ((val & 0xff) << 16);
+#endif
+}
+
 static inline uint32_t htobe32(uint32_t val)
 {
 #if (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)

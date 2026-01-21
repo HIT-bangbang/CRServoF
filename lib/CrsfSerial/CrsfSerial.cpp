@@ -33,7 +33,8 @@
 CrsfSerial::CrsfSerial(HardwareSerial &port, uint32_t baud) :
     _port(port), _crc(0xd5), _baud(baud),
     _lastReceive(0), _lastChannelsPacket(0), _linkIsUp(false),
-    _passthroughBaud(0)
+    _passthroughBaud(0),
+    _linkStatistics{}, _gpsSensor{}, _vbatSensor{}
 {}
 
 void CrsfSerial::begin(uint32_t baud)
@@ -141,6 +142,9 @@ void CrsfSerial::processPacketIn(uint8_t len)
     case CRSF_FRAMETYPE_GPS:
         packetGps(hdr);
         break;
+    case CRSF_FRAMETYPE_BATTERY_SENSOR:
+        packetVbat(hdr);
+        break;
     case CRSF_FRAMETYPE_RC_CHANNELS_PACKED:
         packetChannelsPacked(hdr);
         break;
@@ -178,7 +182,7 @@ void CrsfSerial::packetChannelsPacked(const crsf_header_t *p)
     // Code assumes there is enough payload for all the channels
     constexpr unsigned inputMask = (1 << CRSF_BITS_PER_CHANNEL) - 1;
     const uint8_t *buf = p->data;
-    unsigned scratch = 0; 
+    unsigned scratch = 0;
     unsigned bitsInScratch = 0;
     for (unsigned ch=0; ch<CRSF_NUM_CHANNELS; ++ch)
     {
@@ -236,6 +240,18 @@ void CrsfSerial::packetGps(const crsf_header_t *p)
 
     if (onPacketGps)
         onPacketGps(&_gpsSensor);
+}
+
+void CrsfSerial::packetVbat(const crsf_header_t *p)
+{
+    const crsf_sensor_battery_t *vbat = (crsf_sensor_battery_t *)p->data;
+    _vbatSensor.voltage = be16toh(vbat->voltage);
+    _vbatSensor.current = be16toh(vbat->current);
+    _vbatSensor.capacity = be24toh(vbat->capacity);
+    _vbatSensor.remaining = vbat->remaining;
+
+    if (onPacketVbat)
+        onPacketVbat(&_vbatSensor);
 }
 
 void CrsfSerial::write(uint8_t b)
